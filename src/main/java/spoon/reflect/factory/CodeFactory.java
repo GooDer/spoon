@@ -369,7 +369,13 @@ public class CodeFactory extends SubFactory {
 	 * variable (strong referencing).
 	 */
 	public <T> CtCatchVariableReference<T> createCatchVariableReference(CtCatchVariable<T> catchVariable) {
-		return factory.Core().<T>createCatchVariableReference().setType(catchVariable.getType()).<CtCatchVariableReference<T>>setSimpleName(catchVariable.getSimpleName());
+		CtCatchVariableReference<T> ref = factory.Core().createCatchVariableReference();
+
+		ref.setType(catchVariable.getType() == null ? null : catchVariable.getType().clone());
+		ref.setSimpleName(catchVariable.getSimpleName());
+		ref.setParent(catchVariable);
+
+		return ref;
 	}
 
 	/**
@@ -425,11 +431,17 @@ public class CodeFactory extends SubFactory {
 	 */
 	public <T> CtVariableAccess<T> createVariableRead(CtVariableReference<T> variable, boolean isStatic) {
 		CtVariableAccess<T> va;
-		if (variable instanceof CtFieldReference) {
+		if (variable instanceof CtFieldReference<T> ctFieldReference) {
 			va = factory.Core().createFieldRead();
 			// creates a this target for non-static fields to avoid name conflicts...
 			if (!isStatic) {
-				((CtFieldAccess<T>) va).setTarget(createThisAccess(((CtFieldReference<T>) variable).getDeclaringType()));
+				// We do not want to change the parent of the declaring type, so clone here
+				CtTypeReference<?> declaringTypeRef = null;
+				if (ctFieldReference.getDeclaringType() != null) {
+					declaringTypeRef = ctFieldReference.getDeclaringType().clone();
+				}
+
+				((CtFieldAccess<T>) va).setTarget(createThisAccess(declaringTypeRef));
 			}
 		} else {
 			va = factory.Core().createVariableRead();
@@ -456,11 +468,17 @@ public class CodeFactory extends SubFactory {
 	 */
 	public <T> CtVariableAccess<T> createVariableWrite(CtVariableReference<T> variable, boolean isStatic) {
 		CtVariableAccess<T> va;
-		if (variable instanceof CtFieldReference) {
+		if (variable instanceof CtFieldReference<T> ctFieldReference) {
 			va = factory.Core().createFieldWrite();
 			// creates a this target for non-static fields to avoid name conflicts...
 			if (!isStatic) {
-				((CtFieldAccess<T>) va).setTarget(createThisAccess(((CtFieldReference<T>) variable).getDeclaringType()));
+				// We do not want to change the parent of the declaring type, so clone here
+				CtTypeReference<?> declaringTypeRef = null;
+				if (ctFieldReference.getDeclaringType() != null) {
+					declaringTypeRef = ctFieldReference.getDeclaringType().clone();
+				}
+
+				((CtFieldAccess<T>) va).setTarget(createThisAccess(declaringTypeRef));
 			}
 		} else {
 			va = factory.Core().createVariableWrite();

@@ -18,6 +18,9 @@ package spoon.test.eval;
 
 
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
@@ -37,6 +40,7 @@ import spoon.reflect.code.BinaryOperatorKind;
 import spoon.reflect.code.CtBinaryOperator;
 import spoon.reflect.code.CtBlock;
 import spoon.reflect.code.CtCodeElement;
+import spoon.reflect.code.CtFor;
 import spoon.reflect.code.CtExpression;
 import spoon.reflect.code.CtFieldAccess;
 import spoon.reflect.code.CtIf;
@@ -55,6 +59,7 @@ import spoon.reflect.eval.PartialEvaluator;
 import spoon.reflect.factory.Factory;
 import spoon.reflect.reference.CtTypeReference;
 import spoon.reflect.visitor.AccessibleVariablesFinder;
+import spoon.reflect.visitor.CtScanner;
 import spoon.reflect.visitor.OperatorHelper;
 import spoon.reflect.visitor.filter.TypeFilter;
 import spoon.support.compiler.VirtualFile;
@@ -62,6 +67,7 @@ import spoon.support.reflect.eval.EvalHelper;
 import spoon.support.reflect.eval.InlinePartialEvaluator;
 import spoon.support.reflect.eval.VisitorPartialEvaluator;
 import spoon.test.eval.testclasses.Foo;
+import spoon.testing.utils.GitHubIssue;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static spoon.testing.utils.ModelUtils.build;
@@ -608,5 +614,49 @@ public class EvalTest {
 			ctBinaryOperator.getFactory().createLiteral(Double.POSITIVE_INFINITY),
 			ctLiteral
 		);
+	}
+
+	@Test
+	public void testVisitCtFor() {
+		// contract: visitCtFor evaluates forInit, condition, and forUpdate, and returns a CtFor clone
+		Launcher launcher = new Launcher();
+		CtCodeElement el = launcher.getFactory().Code().createCodeSnippetStatement(
+			"for (int i = 0; i < 10; i++) { System.out.println(i); }"
+		).compile();
+		VisitorPartialEvaluator eval = new VisitorPartialEvaluator();
+		CtElement result = eval.evaluate(el);
+		// the result should be a CtFor (a clone of the original for loop)
+		assertInstanceOf(CtFor.class, result);
+		CtFor forResult = (CtFor) result;
+		// forInit: original (int i = 0) + evaluated copy = 2 entries
+		assertEquals(2, forResult.getForInit().size());
+		// condition should be present (i < 10 cannot be fully reduced, stays as is)
+		assertNotNull(forResult.getExpression());
+		// forUpdate: original (i++) + evaluated copy = 2 entries
+		assertEquals(2, forResult.getForUpdate().size());
+	}
+
+	@Test
+	@GitHubIssue(issueNumber = 5001, fixed = true)
+	public void testVisitCtLiteralWithLongStringValue() throws Exception {
+		CtClass<?> ctClass = Launcher.parseClass(Files.readString(Paths.get("src/test/java/spoon/test/prettyprinter/testclasses/SampleClassIssue5001.java")));
+		CtExpression<?> sql = ctClass.getField("sql").getAssignment();
+		StringBuilder result = new StringBuilder();
+		sql.accept(new CtScanner() {
+			@Override
+			public <T> void visitCtLiteral(CtLiteral<T> literal) {
+				result.append(literal.getValue());
+			}
+		});
+
+		String expectedValue = "Select distinct t.NETWORK_IP, t.NETWORK_IP1, t.NETWORK_IP2, " +
+				"t.NETWORK_IP3, t.NETWORK_IP4 from (SELECT DISTINCT t1.ipv4digit1 || '.' || t1.ipv4digit2 || '.' || " +
+				"t1.ipv4digit3 || '.0' network_ip, TO_NUMBER (t1.ipv4digit1) network_ip1, TO_NUMBER (t1.ipv4digit2) " +
+				"network_ip2, TO_NUMBER (t1.ipv4digit3) network_ip3, TO_NUMBER ('0') network_ip4, t1.t2_team_id, " +
+				"t1.system_owner_id, t1.system_owner_team_id FROM ip_info t1 where t1.binary_ip >= '' and t1.binary_ip " +
+				"<= '' ORDER BY network_ip1, network_ip2, network_ip3 ) t order by t.NETWORK_IP1,t.NETWORK_IP2,t.NETWORK_IP3,t.NETWORK_IP4";
+
+		String actualValue = result.toString().strip().replaceAll("\\s{2,}", " ");
+		assertEquals(expectedValue, actualValue);
 	}
 }

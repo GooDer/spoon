@@ -9,6 +9,9 @@ package spoon.refactoring;
 
 import spoon.SpoonException;
 import spoon.reflect.code.CtLocalVariable;
+import spoon.reflect.declaration.CtAnnotation;
+import spoon.reflect.declaration.CtAnnotationMethod;
+import spoon.reflect.declaration.CtCompilationUnit;
 import spoon.reflect.declaration.CtExecutable;
 import spoon.reflect.declaration.CtField;
 import spoon.reflect.declaration.CtMethod;
@@ -20,6 +23,7 @@ import spoon.reflect.visitor.CtScanner;
 import spoon.reflect.visitor.Query;
 import spoon.reflect.visitor.filter.TypeFilter;
 
+import java.util.HashMap;
 import java.util.List;
 
 /**
@@ -37,19 +41,11 @@ public final class Refactoring {
 	 * 		New name of the element.
 	 */
 	public static void changeTypeName(final CtType<?> type, String name) {
-
-		// first we remove the type from the list of types
-		// to be pretty-printed
-		if (type.isTopLevel()) {
-			type.getFactory().CompilationUnit().removeType(type);
-		}
-
 		final String typeQFN = type.getQualifiedName();
 		final List<CtTypeReference<?>> references = Query.getElements(type.getFactory(), new TypeFilter<CtTypeReference<?>>(CtTypeReference.class) {
 			@Override
 			public boolean matches(CtTypeReference<?> reference) {
-				String refFQN = reference.getQualifiedName();
-				return typeQFN.equals(refFQN);
+				return type == reference.getDeclaration();
 			}
 		});
 
@@ -60,27 +56,67 @@ public final class Refactoring {
 
 		// adding the new type
 		if (type.isTopLevel()) {
-			type.getFactory().CompilationUnit().addType(type);
+			CtCompilationUnit compilationUnit = type.getFactory().CompilationUnit().getOrCreate(type);
+
+			new CtScanner() {
+
+				@Override
+				public <T> void visitCtTypeReference(CtTypeReference<T> reference) {
+					if (typeQFN.equals(reference.getQualifiedName())) {
+						reference.setSimpleName(name);
+					}
+
+					super.visitCtTypeReference(reference);
+				}
+			}.scan(compilationUnit);
 		}
 
 	}
 
 	/**
-	 * Changes name of a method, propagates the change in the executable references of the model.
+	 * Changes name of a method, propagates the change to the executable references of the model.
+	 * If the method is a CtAnnotationMethod, the references in the annotations are changed too.
 	 */
 	public static void changeMethodName(final CtMethod<?> method, String newName) {
+		renameExecutableReferences(method, newName);
 
-		final List<CtExecutableReference<?>> references = Query.getElements(method.getFactory(), new TypeFilter<CtExecutableReference<?>>(CtExecutableReference.class) {
+		if (method instanceof CtAnnotationMethod<?> annotationMethod) {
+			renameAnnotationReferences(annotationMethod, newName);
+		}
+
+		method.setSimpleName(newName);
+	}
+
+	private static void renameExecutableReferences(CtMethod<?> method, String newName) {
+		final List<CtExecutableReference<?>> references = Query.getElements(method.getFactory(), new TypeFilter<>(CtExecutableReference.class) {
 			@Override
 			public boolean matches(CtExecutableReference<?> reference) {
 				return reference.getDeclaration() == method;
 			}
 		});
 
-		method.setSimpleName(newName);
-
 		for (CtExecutableReference<?> reference : references) {
 			reference.setSimpleName(newName);
+		}
+	}
+
+	private static void renameAnnotationReferences(CtAnnotationMethod<?> method, String newName) {
+		final List<CtAnnotation<?>> references = Query.getElements(method.getFactory(), new TypeFilter<>(CtAnnotation.class) {
+			@Override
+			public boolean matches(CtAnnotation<?> annotation) {
+				var declaration = annotation.getAnnotationType().getDeclaration();
+				return method.getDeclaringType().equals(declaration);
+			}
+		});
+
+		String oldName = method.getSimpleName();
+		for (var reference : references) {
+			var copy = new HashMap<>(reference.getValues());
+			if (copy.containsKey(oldName)) {
+				var oldValue = copy.remove(oldName);
+				copy.put(newName, oldValue);
+				reference.setValues(copy);
+			}
 		}
 	}
 
@@ -231,7 +267,7 @@ public final class Refactoring {
 	 * Result is written to /$Path/$Package. For different output folder see
 	 * {@link Refactoring#removeDeprecatedMethods(String, String)}.
 	 *
-	 * @param input Path to java files in folder.
+	 * @param path Path to java files in folder.
 	 */
 	public static void removeDeprecatedMethods(String path) {
 		new CtDeprecatedRefactoring().removeDeprecatedMethods(path);

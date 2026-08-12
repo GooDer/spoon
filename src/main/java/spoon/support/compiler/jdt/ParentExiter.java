@@ -20,6 +20,7 @@ import org.eclipse.jdt.internal.compiler.ast.EitherOrMultiPattern;
 import org.eclipse.jdt.internal.compiler.ast.ExplicitConstructorCall;
 import org.eclipse.jdt.internal.compiler.ast.Expression;
 import org.eclipse.jdt.internal.compiler.ast.ForStatement;
+import org.eclipse.jdt.internal.compiler.ast.GuardedPattern;
 import org.eclipse.jdt.internal.compiler.ast.IfStatement;
 import org.eclipse.jdt.internal.compiler.ast.MessageSend;
 import org.eclipse.jdt.internal.compiler.ast.MethodDeclaration;
@@ -254,8 +255,11 @@ public class ParentExiter extends CtInheritanceScanner {
 		} else if (child instanceof CtField<?> field) {
 			// We add the field in addRecordComponent. Afterward, however, JDT visits the Field itself -> Duplication.
 			// To combat this, we delete the existing field and trust JDTs version.
-			if (type instanceof CtRecord record) {
-				record.removeField(record.getField(field.getSimpleName()));
+			if (type instanceof CtRecord record && !field.isStatic()) {
+				CtField<?> existing = record.getField(field.getSimpleName());
+				if (existing != null) {
+					record.removeField(existing);
+				}
 			}
 			type.addField(field);
 			return;
@@ -500,8 +504,8 @@ public class ParentExiter extends CtInheritanceScanner {
 	@Override
 	public <E> void visitCtCase(CtCase<E> caseStatement) {
 		final ASTNode node = jdtTreeBuilder.getContextBuilder().getCurrentNode();
-		if (node instanceof CaseStatement) {
-			caseStatement.setCaseKind(((CaseStatement) node).isExpr ? CaseKind.ARROW : CaseKind.COLON);
+		if (node instanceof CaseStatement cs) {
+			caseStatement.setCaseKind(cs.isSwitchRule ? CaseKind.ARROW : CaseKind.COLON);
 		}
 		if (shouldAddAsCaseExpression(caseStatement, node)) {
 			if (child instanceof CtPattern pattern) {
@@ -510,13 +514,29 @@ public class ParentExiter extends CtInheritanceScanner {
 				caseStatement.addCaseExpression((CtExpression<E>) child);
 			}
 			return;
+		} else if (isGuardExpression(node)) {
+			caseStatement.setGuard((CtExpression<?>) child);
+			return;
 		} else if (child instanceof CtStatement) {
 			caseStatement.addStatement((CtStatement) child);
 			return;
-		} else if (child instanceof CtExpression<?> guard) {
-			caseStatement.setGuard(guard);
 		}
 		super.visitCtCase(caseStatement);
+	}
+
+	private boolean isGuardExpression(ASTNode node) {
+		if (!(node instanceof CaseStatement caseStatement)
+			|| caseStatement.constantExpressions == null
+			|| !(child instanceof CtExpression)) {
+			return false;
+		}
+		for (Expression expression : caseStatement.constantExpressions) {
+			if (expression instanceof GuardedPattern guardedPattern
+				&& getFinalExpressionFromCast(guardedPattern.condition) == childJDT) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private <E> boolean shouldAddAsCaseExpression(CtCase<E> caseStatement, ASTNode node) {
@@ -530,9 +550,16 @@ public class ParentExiter extends CtInheritanceScanner {
 			&& caseStatement.getCaseExpressions().size() < cs.constantExpressions.length) {
 			return true;
 		}
-		// case A _, B _ -> {} is only one constantExpression in JDT, but an EitherOrMultiPattern
-		// so we need to unpack it and see how many case expressions it actually is
-		if (cs.constantExpressions.length == 1 && cs.constantExpressions[0] instanceof EitherOrMultiPattern eomp) {
+		// JDT represents case A _, B _ as one EitherOrMultiPattern, optionally wrapped by a guard,
+		// so we need to unpack it and see how many case expressions it actually is.
+		if (cs.constantExpressions.length != 1) {
+			return false;
+		}
+		Expression caseExpression = cs.constantExpressions[0];
+		if (caseExpression instanceof GuardedPattern guardedPattern) {
+			caseExpression = guardedPattern.primaryPattern;
+		}
+		if (caseExpression instanceof EitherOrMultiPattern eomp) {
 			// returns true if we still expect more case expressions to be added
 			return caseStatement.getCaseExpressions().size() < eomp.getAlternatives().length;
 		}
@@ -1169,7 +1196,10 @@ public class ParentExiter extends CtInheritanceScanner {
 	public void visitCtRecordPattern(CtRecordPattern pattern) {
 		CtElement child = adjustIfLocalVariableToTypePattern(this.child);
 		if (child instanceof CtTypeReference<?> typeReference) {
-			pattern.setRecordType(typeReference);
+			// JDTTreeBuilder#visit(SingleTypeReference wraps the child in a CtTypeAccess later on,
+			// replacing its parent. Therefore, we need to use a clone for this otherwise the typeReference
+			// has two different parents (one wins and the model is inconsistent).
+			pattern.setRecordType(typeReference.clone());
 		} else if (child instanceof CtPattern innerPattern) {
 			pattern.addPattern(innerPattern);
 		}

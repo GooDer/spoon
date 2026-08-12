@@ -19,7 +19,7 @@
                 let
                   base = rec {
                     jdk =
-                      if javaVersion <= 23 then prev."jdk${toString javaVersion}"
+                      if javaVersion <= 25 then prev."jdk${toString javaVersion}"
                       else abort "Not set up yet :)";
                     maven = prev.maven.override { jdk_headless = jdk; };
                   };
@@ -44,28 +44,21 @@
               sha256 = "sha256-wl5UEu2U11Q0lZfm9reMhGMCI7y6sabk18j7SPWgy1k=";
             };
           };
-          jreleaser = pkgs.stdenv.mkDerivation rec {
-            pname = "jreleaser-cli";
-            version = "1.11.0";
-
-            src = pkgs.fetchurl {
-              url = "https://github.com/jreleaser/jreleaser/releases/download/v${version}/jreleaser-tool-provider-${version}.jar";
-              sha256 = "sha256-VkINXKVBBBK6/PIRPMVKZGY9afE7mAsqrcFPh2Algqk=";
-            };
-
-            nativeBuildInputs = with pkgs; [ makeWrapper ];
-
-            dontUnpack = true;
-
-            installPhase = ''
-              mkdir -p $out/share/java/ $out/bin/
-              cp $src $out/share/java/${pname}.jar
-              makeWrapper ${pkgs.jdk}/bin/java $out/bin/${pname} \
-                --add-flags "-jar $out/share/java/${pname}.jar"
-            '';
-          };
         in
         pkgs.mkShell rec {
+          shellHook = ''
+            if [ "$LANG" = "C.UTF-8" ]; then
+                echo "You are using the C locale. Tests will fail. Changing it to en_US if possible"
+
+                if locale -a | grep -iP "en_us.utf(-?)8"; then
+                    echo "Changing your locale to en_US.UTF-8"
+                    export LANG=en_US.UTF-8
+                else
+                    echo "You do not have en_US.UTF-8 installed ('localectl list-locales'/'locale -a')"
+                    echo "Please change it something else yourself"
+                fi
+            fi
+          '';
           test = pkgs.writeScriptBin "test" ''
             set -eu
 
@@ -115,8 +108,6 @@
             mvn -q checkstyle:checkstyle -Pcheckstyle-test
             # Check documentation links
             python3 ./chore/check-links-in-doc.py
-            # Analyze dependencies through DepClean in spoon-core
-            # mvn -q depclean:depclean
 
             pushd spoon-decompiler || exit 1
             mvn -q versions:use-latest-versions -DallowSnapshots=true -Dincludes=fr.inria.gforge.spoon
@@ -124,7 +115,6 @@
             git diff
             mvn -q test
             mvn -q checkstyle:checkstyle license:check
-            # mvn -q depclean:depclean
             popd || exit 1
 
             pushd spoon-control-flow || exit 1
@@ -140,16 +130,14 @@
             mvn -q versions:update-parent -DallowSnapshots=true
             git diff
             mvn -q test
-            # mvn -q depclean:depclean
             popd || exit 1
 
             pushd spoon-smpl || exit 1
             mvn -q versions:use-latest-versions -DallowSnapshots=true -Dincludes=fr.inria.gforge.spoon
             mvn -q versions:update-parent -DallowSnapshots=true
             git diff
-            mvn -q -Djava.src.version=17 test
+            mvn -q test
             mvn -q checkstyle:checkstyle license:check
-            # mvn -q depclean:depclean
             popd || exit 1
           '');
           extraRemote = pkgs.writeScriptBin "extra-remote" ''
@@ -175,7 +163,7 @@
           '';
           pythonEnv =
             if extraChecks then
-              with pkgs; python311.withPackages (ps: [
+              with pkgs; python3.withPackages (ps: [
                 ps.requests
                 ps.pygithub
                 ps.commonmark
@@ -184,7 +172,7 @@
           packages = with pkgs;
             [ jdk maven test codegen coverage mavenPomQuality javadocQuality reproducibleBuilds ]
             ++ (if extraChecks then [ gradle pythonEnv extra extraRemote jbang ] else [ ])
-            ++ (if release then [ semver jreleaser ] else [ ]);
+            ++ (if release then [ semver pkgs.jreleaser-cli yq-go ] else [ ]);
         };
     in
     {
@@ -199,8 +187,8 @@
                 default = jdk17;
                 jdk17 = mkShell system { javaVersion = 17; };
                 jdk21 = mkShell system { javaVersion = 21; };
-                jdk22 = mkShell system { javaVersion = 22; };
-                extraChecks = mkShell system { extraChecks = true; javaVersion = 21; };
+                jdk25 = mkShell system { javaVersion = 25; };
+                extraChecks = mkShell system { extraChecks = true; javaVersion = 25; };
                 jReleaser = mkShell system { release = true; javaVersion = 21; };
               });
         in

@@ -22,6 +22,7 @@ import org.junit.jupiter.api.condition.EnabledForJreRange;
 import org.junit.jupiter.api.condition.JRE;
 import org.junit.jupiter.api.extension.ExtendWith;
 import spoon.Launcher;
+import spoon.LauncherTest;
 import spoon.SpoonException;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.CtArrayAccess;
@@ -72,6 +73,7 @@ import spoon.reflect.visitor.filter.TypeFilter;
 import spoon.support.DefaultCoreFactory;
 import spoon.support.JavaOutputProcessor;
 import spoon.support.StandardEnvironment;
+import spoon.support.compiler.VirtualFile;
 import spoon.support.compiler.jdt.JDTSnippetCompiler;
 import spoon.support.reflect.code.CtCommentImpl;
 import spoon.test.comment.testclasses.BlockComment;
@@ -105,11 +107,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static spoon.testing.assertions.SpoonAssertions.assertThat;
 
 
 public class CommentTest {
@@ -1275,34 +1279,71 @@ public class CommentTest {
 	}
 
 	@ModelTest("./src/test/java/spoon/test/comment/testclasses/ArrayAccessComments.java")
-	@GitHubIssue(issueNumber = 2482, fixed = false)
+	@GitHubIssue(issueNumber = 2482, fixed = true)
 	public void testArrayAccessComments(CtModel model) {
 		//contract: comments at array accesses should be properly added to the AST
 		List<CtComment> comments = model.getElements(new TypeFilter<>(CtComment.class));
 		List<CtArrayAccess<?, ?>> arrayAccesses = model.getElements(new TypeFilter<>(CtArrayAccess.class));
 
-		assertEquals(2,comments.size());
-		assertEquals("comment 1", comments.get(0).getContent());
-		assertEquals("comment 2", comments.get(1).getContent());
-
-		assertEquals(1, arrayAccesses.get(0).getComments().size());
-		assertEquals("comment 1", arrayAccesses.get(0).getComments().get(0).getContent());
-		assertEquals(1, arrayAccesses.get(1).getComments().size());
-		assertEquals("comment 2", arrayAccesses.get(1).getComments().get(0).getContent());
+		assertThat(comments)
+			.extracting(CtComment::getContent)
+			.containsExactly("comment 1", "comment 2");
+		assertThat(arrayAccesses)
+			.satisfiesExactly(
+				first -> assertThat(first.getComments())
+					.extracting(CtComment::getContent)
+					.containsExactly("comment 1"),
+				second -> assertThat(second.getComments())
+					.extracting(CtComment::getContent)
+					.containsExactly("comment 2"));
 	}
 
 	@ModelTest("./src/test/java/spoon/test/comment/testclasses/BinaryOperatorComments.java")
-	@GitHubIssue(issueNumber = 2482, fixed = false)
+	@GitHubIssue(issueNumber = 2482, fixed = true)
 	public void testBinaryOperatorComments(CtModel model) {
 		//contract: comments at binary operators should be properly added to the AST
 		List<CtComment> comments = model.getElements(new TypeFilter<>(CtComment.class));
 		List<CtBinaryOperator<?>> binaryOperators = model.getElements(new TypeFilter<>(CtBinaryOperator.class));
 
-		assertEquals(1, comments.size());
-		assertEquals("comment 1", comments.get(0).getContent());
+		assertThat(comments)
+			.extracting(CtComment::getContent)
+			.containsExactly("comment 1");
+		assertThat(binaryOperators)
+			.singleElement()
+			.satisfies(binaryOperator -> assertThat(binaryOperator.getComments())
+				.extracting(CtComment::getContent)
+				.containsExactly("comment 1"));
+	}
 
-		assertEquals(1, binaryOperators.get(0).getComments().size());
-		assertEquals("comment 1", binaryOperators.get(0).getComments().get(0).getContent());
+	@ModelTest(code = "@Deprecated(/* marker */) class CommentInEmptyAnnotation {}")
+	public void testCommentInEmptyAnnotationFallsBackToAnnotation(CtModel model) {
+		// contract: a comment is retained on its enclosing annotation when the annotation has no value expression
+		assertThat(model.getElements(new TypeFilter<CtAnnotation<?>>(CtAnnotation.class)))
+			.singleElement()
+			.satisfies(annotation -> assertThat(annotation.getComments())
+				.extracting(CtComment::getContent)
+				.containsExactly("marker"));
+	}
+
+	@Test
+	public void testCommentInModuleWithoutDirectivesFallsBackToModule() {
+		// contract: a comment is retained on its enclosing module when there is no directive to receive it
+		Launcher launcher = new Launcher();
+		launcher.getEnvironment().setComplianceLevel(9);
+		launcher.getEnvironment().setNoClasspath(true);
+		launcher.addInputResource(new VirtualFile("""
+			module comment.fallback {
+				// exports disabled
+			}
+			""", "module-info.java"));
+
+		CtModel model = launcher.buildModel();
+		assertThat(model.getAllModules())
+			.filteredOn(candidate -> candidate.getSimpleName().equals("comment.fallback"))
+			.singleElement()
+			.satisfies(module -> assertThat(module.getComments())
+				.extracting(CtComment::getContent)
+				.containsExactly("exports disabled"));
 	}
 
 	@ModelTest("./src/test/java/spoon/test/comment/testclasses/TypeParameterComments.java")
@@ -1324,5 +1365,31 @@ public class CommentTest {
 		assertEquals("comment 2", typeParameters.get(1).getComments().get(0).getContent());
 		assertEquals("comment 3", typeParameters.get(1).getComments().get(1).getContent());
 		assertEquals("comment 4", typeParameters.get(1).getComments().get(2).getContent());
+	}
+
+	@Test
+	@GitHubIssue(issueNumber = 6069, fixed = true)
+	@ExtendWith(LineSeparatorExtension.class)
+	public void testCommentInLambda() {
+		// contract: Comments inside lambdas should not crash or disappear.
+		CtClass<?> ctClass = Launcher.parseClass("""
+			class Foo {
+			  public void bar() {
+			    Runnable r = () -> {
+			        /* hello */ System.exit(1);
+			    };
+				Runnable b = () -> /* hello2 */ System.exit(1);
+				Runnable c = /* hello3 */ () -> System.exit(1);
+				java.util.function.IntFunction<Void> d = ( /* hello4 */ int a ) -> null;
+				int e = /* hello5 */ 5;
+			  }
+			}
+			""");
+		assertThat(ctClass).asString().contains("/* hello */");
+		// Wrong output, there should not be a newline here. Codify it for now in the test case
+		assertThat(ctClass).asString().containsPattern("/\\* hello2 \\*/\n\\s+System");
+		assertThat(ctClass).asString().contains("/* hello3 */");
+		assertThat(ctClass).asString().contains("/* hello4 */");
+		assertThat(ctClass).asString().contains("/* hello5 */");
 	}
 }
